@@ -1,0 +1,47 @@
+{
+	"name": "pi-extension-plan-mode",
+	"version": "0.1.0",
+	"description": "pi 插件：Codex 式 plan 模式。AI 先探索、提出计划，你在终端里批准或驳回，批准前写操作被硬拦截。全程零 prompt-cache 失效。",
+	"main": "index.ts",
+	"keywords": [
+		"pi-package",
+		"pi",
+		"pi-extension",
+		"plan-mode",
+		"coding-agent",
+		"ai",
+		"llm"
+	],
+	"license": "MIT",
+	"files": [
+		"index.ts",
+		"README.md",
+		"LICENSE"
+	],
+	"pi": {
+		"extensions": [
+			"./index.ts"
+		]
+	},
+	"dependencies": {
+		"typebox": "^1.3.7"
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": "*"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2.5.14",
+		"@types/node": "^22.20.3",
+		"typescript": "^7.0.2",
+		"vitest": "^5.0.1"
+	},
+	"scripts": {
+		"format": "biome format --write .",
+		"lint": "biome lint .",
+		"check:biome": "biome check .",
+		"test": "vitest run",
+		"test:watch": "vitest",
+		"typecheck": "tsc --noEmit"
+	},
+	"type": "commonjs"
+}
