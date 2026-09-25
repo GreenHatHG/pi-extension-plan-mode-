@@ -131,10 +131,43 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 
 	// ── 命令 / 快捷键 / 启动 flag ────────────────────────────────
 
+	// /plan 不带参数：原样 toggle；/plan <问题>：确保进入 plan 模式后，
+	// 把问题作为用户消息发送（一个回合内完成「进模式 + 提问」）。
 	pi.registerCommand(CMD_NAME, {
-		description: "Toggle Codex-style plan mode (writes blocked until plan approval)",
-		handler: async (_args, ctx) => {
-			await togglePlanMode(ctx);
+		description: "Toggle plan mode; /plan <question> enters plan mode and asks the question in one step",
+		handler: async (args, ctx) => {
+			const question = args.trim();
+			if (!question) {
+				// 不带参数：原样 toggle（开→关 / 关→开）
+				await togglePlanMode(ctx);
+				return;
+			}
+			if (!planMode) {
+				// 带问题且未开启：进入 plan 模式（不发反令）
+				planMode = true;
+				framingDelivered = false;
+				offNoticePending = false;
+				persistState();
+				updateStatus(ctx);
+				// 注意：此时立即生效，tool_call 门控会当场拦截仍在飞 run 的后续 write/edit，
+				// 而非等 follow-up 问题才开始管——与手动 /plan toggle 行为一致，有意为之。
+				ctx.ui.notify(
+					`Plan mode on. write/edit are blocked except for markdown files (.md/.mdx) inside the working directory until the plan is approved via submit_plan.`,
+					"info",
+				);
+			}
+			try {
+				// 空闲直接发（必触发 turn）；忙时排队为 followUp（裸发在 streaming 中会同步抛错）
+				if (ctx.isIdle?.()) {
+					pi.sendUserMessage(question);
+				} else {
+					pi.sendUserMessage(question, { deliverAs: "followUp" });
+					ctx.ui.notify("Agent busy — question queued as follow-up.", "info");
+				}
+			} catch {
+				// sendUserMessage 不可用（如 print 模式）：模式已切换，提示用户手动输入
+				ctx.ui.notify("Plan mode is on, but the question could not be auto-sent; type it in the prompt.", "warning");
+			}
 		},
 	});
 

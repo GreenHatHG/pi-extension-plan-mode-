@@ -19,10 +19,13 @@ export function createMockRuntime() {
 	const sessionEntries: SessionEntry[] = [];
 	const notifications: { msg: string; kind: string }[] = [];
 	const statusBars = new Map<string, string | undefined>();
+	const sentUserMessages: Array<{ content: string; options?: unknown }> = [];
+	let isIdleValue = true;
 
 	const ctx: any = {
 		hasUI: true,
 		cwd: "/project",
+		isIdle: () => isIdleValue,
 		sessionManager: {
 			// 与真实 pi 一致：扩展从 ctx.sessionManager.getBranch() 重放会话条目
 			getBranch: () => sessionEntries,
@@ -42,6 +45,9 @@ export function createMockRuntime() {
 		},
 		registerCommand: (name: string, def: any) => commands.set(name, def),
 		registerTool: (tool: any) => tools.set(tool.name, tool),
+		sendUserMessage: (content: any, options?: any) => {
+			sentUserMessages.push({ content, options });
+		},
 		appendEntry: (customType: string, data: unknown) => {
 			const entry: SessionEntry = { type: "custom", id: `e${sessionEntries.length}`, customType, data };
 			sessionEntries.push(entry);
@@ -100,6 +106,10 @@ export function createMockRuntime() {
 		sessionEntries,
 		tools,
 		commands,
+		sentUserMessages,
+		setIdle: (v: boolean) => {
+			isIdleValue = v;
+		},
 	};
 }
 

@@ -78,6 +78,45 @@ describe("plan mode toggle", () => {
 	});
 });
 
+describe("/plan <question>", () => {
+	test("进入 plan 模式并发送问题（一次性）", async () => {
+		const rt = await setup();
+		await rt.runCommand("plan", "支持 /plan+问题 这样调用吗");
+		expect(rt.sentUserMessages).toEqual([{ content: "支持 /plan+问题 这样调用吗" }]);
+		expect(rt.statusBars.get("plan-mode")).toBe("⏸ plan");
+		// 注入 framing 依旧生效
+		const first = await rt.startAgent();
+		expect(injectedText(first)).toContain("[PLAN MODE]");
+	});
+
+	test("已在 plan 模式时带问题不关闭模式，只追加发送", async () => {
+		const rt = await setup();
+		await rt.runCommand("plan"); // 开启
+		await rt.runCommand("plan", "第二个问题");
+		expect(rt.sentUserMessages).toEqual([{ content: "第二个问题" }]);
+		expect(rt.statusBars.get("plan-mode")).toBe("⏸ plan");
+	});
+
+	test("sendUserMessage 不可用时不抛错，提示手动输入", async () => {
+		const rt = await setup();
+		rt.pi.sendUserMessage = undefined;
+		await rt.runCommand("plan", "hello");
+		expect(rt.notifications.some((n) => n.kind === "warning")).toBe(true);
+		expect(rt.statusBars.get("plan-mode")).toBe("⏸ plan");
+	});
+
+	test("agent 忙时排队为 followUp 而非直接发送", async () => {
+		const rt = await setup();
+		rt.setIdle(false);
+		await rt.runCommand("plan", "排队的问题");
+		expect(rt.sentUserMessages).toEqual([
+			{ content: "排队的问题", options: { deliverAs: "followUp" } },
+		]);
+		expect(rt.notifications.some((n) => n.msg.includes("follow-up"))).toBe(true);
+		expect(rt.statusBars.get("plan-mode")).toBe("⏸ plan");
+	});
+});
+
 describe("write gating (tool_call interception)", () => {
 	test("plan 模式下 write/edit 被拦（cwd 内 markdown 除外）", async () => {
 		const rt = await setup();
