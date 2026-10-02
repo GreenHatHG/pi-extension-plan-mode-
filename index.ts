@@ -411,17 +411,17 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 				};
 			}
 
-			// 无终端 UI（print/json 模式）：不能把 undefined 当批准。
-			// 策略：直接把计划打出来并继续（不阻塞无人值守运行）。
+			// 无终端 UI（print/json/headless 模式）：不能进行人工评审，直接报错。
+			// 保持 planMode 不变，避免无人值守运行意外获得写权限。
 			if (!ctx.hasUI) {
 				return {
 					content: [
 						{
 							type: "text",
-							text: `[plan mode, no interactive UI] Plan presented for the record:\n\n${planText}\n\nNo reviewer is attached; continuing without approval gate.`,
+							text: `Error: ${TOOL_NAME} requires an interactive UI for plan review, but none is attached (print/headless mode). Plan mode remains active: write/edit stay blocked except for markdown plan files. Run this in an interactive session to approve the plan, or disable plan mode first.`,
 						},
 					],
-					details: { approved: true, noUi: true },
+					details: { approved: false, noUi: true },
 				};
 			}
 

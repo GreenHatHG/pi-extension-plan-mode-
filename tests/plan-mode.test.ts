@@ -304,15 +304,17 @@ describe("submit_plan approval loop (terminal)", () => {
 		expect(empty.result.content[0].text).toContain("is empty");
 	});
 
-	test("无 UI（print 模式）：不阻塞，记录计划后继续", async () => {
+	test("无 UI（print/headless 模式）：报错且保持写门控", async () => {
 		const rt = await setup();
 		rt.ctx.hasUI = false;
 		rt.ctx.cwd = cwd;
 		writePlan(cwd, "PLAN.md", "# Plan\n- step");
 		await rt.runCommand("plan");
 		const r = await rt.callTool("submit_plan", { filePath: "PLAN.md" });
-		expect(r.result.details.noUi).toBe(true);
-		expect(r.result.content[0].text).toContain("# Plan");
+		expect(r.result.details).toEqual({ approved: false, noUi: true });
+		expect(r.result.content[0].text).toContain("Error:");
+		expect(r.result.content[0].text).toContain("interactive UI");
+		expect((await rt.callTool("write", { path: "src/index.ts" })).blocked).toBe(true);
 	});
 });
 

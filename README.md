@@ -68,8 +68,8 @@ cp index.ts ~/.pi/agent/extensions/plan-mode.ts
 | `/plan <问题>` | 一步完成：未开启则先进入 plan 模式，并把问题作为用户消息发送触发一轮 |
 | `submit_plan` | AI 提交计划，终端弹窗评审 |
 
-无 UI 环境（`pi -p "..."` print 模式）：`submit_plan` 不阻塞，计划记录后继续，
-不会把「无人值守」误判成批准或拒绝。
+无 UI 环境（`pi -p "..."` print/headless 模式）：`submit_plan` 直接报错，plan 模式保持开启，
+写门控不会解除。需要在交互式会话中评审批准，或先关闭 plan 模式。
 
 ## 写门控与 bash
 
