@@ -27,21 +27,20 @@ export const PLAN_REVIEW_OPTIONS = [
 export const PLANNING_FRAMING = `[PLAN MODE]
 You are in plan mode.
 
-Rules until the plan is approved:
-- write/edit are hard-blocked EXCEPT for markdown plan files (.md/.mdx) inside the working directory. Write your plan there (e.g. PLAN.md, or a meaningful name like plans/auth.md); do NOT write or modify anything else.
-- bash is available for exploration, but obviously mutating commands (file mutation, redirects, installs, and git write operations) are blocked as a best-effort guard; this is not a shell sandbox.
-- Explore the codebase to build context, write the complete plan to a markdown file, then call ${TOOL_NAME} with that file's path.
+Until the plan is approved:
+- write/edit may only modify .md/.mdx files inside the working directory (cwd). All other writes are blocked.
+- bash is for read-only exploration. File mutations, redirects, installs, git write operations, sed -i, and tee may be blocked by a best-effort guard.
+- Explore the codebase, then write the complete plan to a markdown file and call ${TOOL_NAME} with its path.
+- The plan must include context, approach, files to modify, implementation steps, and verification.
 - A blocked tool call is not an error to retry: it means plan mode forbids it.
+- If non-markdown changes are needed before approval, ask the user to run /plan to exit plan mode. Do not attempt those writes.
 
-Presenting the plan:
-- The plan file must cover: context, approach, files to modify, implementation steps, and verification.
-- The user reviews it in the terminal and can approve, revise (with feedback), or reject.
-- If revised: update the SAME file in place and call ${TOOL_NAME} again with the same path. If approved: write access is fully restored — proceed with implementation in the same conversation.`;
+After a revision request, update the same plan file and submit it again. After approval, implement the approved plan.`;
 
 /** 关闭 plan 模式时注入一次的反令。历史 append-only：旧框架说明留在原地，
  * 由这条显式声明使其失效（模型遵循最近指令），绝不回删历史中段。 */
 export const PLAN_MODE_OFF_NOTICE = `[PLAN MODE OFF]
-Plan mode has ended. The planning restrictions no longer apply: write/edit are fully available again (the markdown-plan-files-only limit is gone), and ${TOOL_NAME} is no longer needed. Respond and use tools normally. If the user wants plan mode again, they will re-enable it.`;
+Plan mode has ended. Previous planning restrictions no longer apply. write/edit and normal bash operations are available again. Do not call ${TOOL_NAME} unless plan mode is enabled again.`;
 
 // ── 计划文件写判定 ─────────────────────────────────────────────────
 
@@ -296,7 +295,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 			if (isPlanWritePathAllowed(inputPath, cwd)) return;
 			return {
 				block: true,
-				reason: `Plan mode: ${event.toolName} is blocked outside markdown plan files (.md/.mdx) inside the working directory. Write your plan to a file like ${SUGGESTED_PLAN_FILE} and present it via ${TOOL_NAME}; full write access returns after approval.`,
+				reason: `Plan mode: ${event.toolName} is blocked. Only .md/.mdx plan files inside the working directory may be written or edited. Update the plan file and call ${TOOL_NAME}, or ask the user to run /plan to exit plan mode.`,
 			};
 		}
 		if (event.toolName === "bash") {
@@ -305,7 +304,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 			if (matchedRule) {
 				return {
 					block: true,
-					reason: `Plan mode: bash command blocked because it looks like a ${matchedRule}. This is a best-effort guard, not a shell sandbox. Keep exploration read-only or use /plan to leave plan mode. Command: ${command}`,
+					reason: `Plan mode: bash command blocked because it appears to be a ${matchedRule}. Use read-only exploration, or ask the user to run /plan to exit plan mode.`,
 				};
 			}
 		}
@@ -319,17 +318,16 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		label: "Submit plan",
 		description:
 			"Submits a written markdown plan file to the user for interactive review and approval before execution.",
-		promptSnippet: "submit a markdown plan file for user review",
+		promptSnippet: "submit a complete markdown plan file for user review",
 		promptGuidelines: [
-			"submit_plan: Call only while in plan mode to present a finished plan for user review.",
-			"submit_plan: Before calling, write the entire proposal to a markdown file (.md/.mdx) within the workspace and pass only its path — never the plan text.",
-			"submit_plan: If the user requests revisions, edit the same plan file in place and call submit_plan again with the same path.",
-			"submit_plan: Do NOT start implementation until the user approves the plan via submit_plan.",
+			"submit_plan: Call this only after writing a complete plan to a .md/.mdx file inside the working directory; pass only the file path.",
+			"submit_plan: If revision is requested, update the same plan file and submit the same path again.",
+			"submit_plan: Do not implement changes until the user approves the plan.",
 		],
 		parameters: Type.Object({
 			filePath: Type.String({
 				description:
-					"Path to the markdown plan file, relative to the working directory (e.g., 'PLAN.md' or 'plans/feature.md'). Must end in .md or .mdx. Pass the path only, do NOT pass the plan text.",
+					"Path to the markdown plan file, relative to the working directory (e.g., 'PLAN.md' or 'plans/feature.md'). Must end in .md or .mdx.",
 			}),
 		}),
 
@@ -411,8 +409,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 				};
 			}
 
-			// 无终端 UI（print/json/headless 模式）：不能进行人工评审，直接报错。
-			// 保持 planMode 不变，避免无人值守运行意外获得写权限。
+			// 无终端 UI（print/json/headless 模式）：无法人工评审，直接报错并保持写门控。
 			if (!ctx.hasUI) {
 				return {
 					content: [
@@ -429,9 +426,14 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 			const choice = await ctx.ui.select("Plan — review and decide:", [...PLAN_REVIEW_OPTIONS]);
 
 			if (choice === undefined) {
-				// 取消/Esc：不改变状态，AI 原地等指示
+				// 取消/Esc：不改变状态，等待用户明确指示
 				return {
-					content: [{ type: "text", text: "Plan review dismissed. Stay in plan mode and wait for user input." }],
+					content: [
+						{
+							type: "text",
+							text: "Plan review dismissed. Do not call submit_plan again or modify the plan file until the user sends a new instruction.",
+						},
+					],
 					details: { approved: false, dismissed: true },
 				};
 			}
@@ -439,7 +441,8 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 			if (choice === PLAN_REVIEW_OPTIONS[0]) {
 				planMode = false;
 				framingDelivered = false;
-				offNoticePending = false;
+				// 批准也要投递反令，使历史中的旧 [PLAN MODE] framing 失效。
+				offNoticePending = true;
 				persistState();
 				updateStatus(ctx);
 				ctx.ui.notify("Plan approved — writes unlocked.", "info");
@@ -447,7 +450,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 					content: [
 						{
 							type: "text",
-							text: "Plan APPROVED. Write access is fully restored (write/edit unblocked). Proceed with implementation now, following the approved plan exactly.",
+							text: "Plan APPROVED. Previous [PLAN MODE] restrictions are no longer active. Write access is fully restored (write/edit unblocked). Proceed with implementation now, following the approved plan exactly.",
 						},
 					],
 					details: { approved: true },
@@ -460,7 +463,10 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 				if (!feedbackText) {
 					return {
 						content: [
-							{ type: "text", text: "Revision requested but no feedback given. Wait for the user's next message." },
+							{
+								type: "text",
+								text: "No revision feedback was provided. Do not resubmit the plan until the user responds.",
+							},
 						],
 						details: { approved: false, reviseNoFeedback: true },
 					};

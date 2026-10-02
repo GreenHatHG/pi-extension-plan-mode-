@@ -213,7 +213,7 @@ describe("submit_plan tool metadata", () => {
 	test("promptGuidelines 使用 submit_plan 工具名并描述调用约束", async () => {
 		const rt = await setup();
 		const guidelines = rt.tools.get("submit_plan").promptGuidelines as string[];
-		expect(guidelines).toHaveLength(4);
+		expect(guidelines).toHaveLength(3);
 		expect(guidelines.every((guideline) => guideline.startsWith("submit_plan:"))).toBe(true);
 		expect(guidelines.join("\n")).not.toContain("present_plan");
 	});
@@ -235,7 +235,8 @@ describe("submit_plan approval loop (terminal)", () => {
 		const r = await rt.callTool("submit_plan", { filePath: "PLAN.md" });
 		expect(r.result.details.approved).toBe(true);
 		expect(r.result.content[0].text).toContain("APPROVED");
-		// 相位已翻转：下一轮不再注入 framing，工具不再被拦
+		// 相位已翻转：下一轮注入反令，使旧 framing 失效；反令只发一次
+		expect(injectedText(await rt.startAgent())).toContain("[PLAN MODE OFF]");
 		expect(injectedText(await rt.startAgent())).toBeNull();
 	});
 
@@ -263,6 +264,7 @@ describe("submit_plan approval loop (terminal)", () => {
 		rt.ctx.ui.editor = async () => "   ";
 		const r = await rt.callTool("submit_plan", { filePath: "PLAN.md" });
 		expect(r.result.details.reviseNoFeedback).toBe(true);
+		expect(r.result.content[0].text).toContain("Do not resubmit the plan until the user responds.");
 	});
 
 	test("Reject：明确停下等指示", async () => {
@@ -283,6 +285,7 @@ describe("submit_plan approval loop (terminal)", () => {
 		// 默认 mock select 返回 undefined（Esc）
 		const r = await rt.callTool("submit_plan", { filePath: "PLAN.md" });
 		expect(r.result.details.dismissed).toBe(true);
+		expect(r.result.content[0].text).toContain("Do not call submit_plan again or modify the plan file");
 		// 仍在 plan 模式
 		expect((await rt.callTool("write", { path: "x.ts" })).blocked).toBe(true);
 	});
