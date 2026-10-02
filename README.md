@@ -6,7 +6,7 @@ pi 插件：Codex 式 plan 模式（终端确认版）。AI 先探索代码、�
 
 ```
 /plan（或再按一次关闭）
-   └─ 进入 plan 模式：write/edit 只能写 cwd 内的 .md/.mdx 文件，bash 放开
+   └─ 进入 plan 模式：write/edit 只能写 cwd 内的 .md/.mdx 文件，bash 探索命令放行，明显写入命令 best-effort 拦截
         │  AI 只读探索 → 计划写成 markdown 文件（如 PLAN.md / plans/auth.md）
         │  → 调 submit_plan(filePath)（提交时读盘，不传内容）
         ▼
@@ -75,9 +75,8 @@ cp index.ts ~/.pi/agent/extensions/plan-mode.ts
 
 plan 模式下 write/edit 放行 **cwd 内任意 markdown 文件**（`.md`/`.mdx`；路径
 resolve 后必须落在 cwd 内，目录穿越与绝对路径逃逸均拒绝）——多个计划/多个
-agent 各写各的文件，文件名有意义。其余写入一律拦；bash 完全放开（pi 本无
-权限弹窗，放开换来探索期零误拦），framing 只软性提醒避免有副作用的命令。
-真正的写入发生在计划批准之后。
+agent 各写各的文件，文件名有意义。其余内置 write/edit 写入一律拦截。bash 放行探索命令，并对明显的文件操作、重定向、安装和 git 写入命令做 best-effort 拦截；这不是
+shell 沙箱，仍可能被绕过。通过内置 write/edit 工具的真正写入发生在计划批准之后。
 
 `submit_plan` 不传计划内容，只传 `filePath`：提交时校验路径（md/mdx、cwd 内）、
 读盘、空文件报错。修订时改同一个文件，再次以相同路径提交。
@@ -91,7 +90,7 @@ agent 各写各的文件，文件名有意义。其余写入一律拦；bash 完
 ## 开发
 
 ```bash
-pnpm test        # vitest，23 个用例
+pnpm test        # vitest，28 个用例
 pnpm typecheck   # tsc --noEmit
 pnpm check:biome # lint + format 检查
 ```

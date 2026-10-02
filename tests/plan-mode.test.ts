@@ -109,9 +109,7 @@ describe("/plan <question>", () => {
 		const rt = await setup();
 		rt.setIdle(false);
 		await rt.runCommand("plan", "排队的问题");
-		expect(rt.sentUserMessages).toEqual([
-			{ content: "排队的问题", options: { deliverAs: "followUp" } },
-		]);
+		expect(rt.sentUserMessages).toEqual([{ content: "排队的问题", options: { deliverAs: "followUp" } }]);
 		expect(rt.notifications.some((n) => n.msg.includes("follow-up"))).toBe(true);
 		expect(rt.statusBars.get("plan-mode")).toBe("⏸ plan");
 	});
@@ -149,11 +147,32 @@ describe("write gating (tool_call interception)", () => {
 		expect((await rt.callTool("write", { path: "PLAN.MD" })).blocked).toBe(false); // 扩展名大小写不敏感
 	});
 
-	test("plan 模式下 bash 完全放行", async () => {
+	test("plan 模式下只读 bash 放行，明显写入命令被拦", async () => {
 		const rt = await setup();
 		await rt.runCommand("plan");
-		for (const command of ["git status", "npm install foo", "curl example.com", "rm -rf /"]) {
+		for (const command of [
+			"git status",
+			"git log --oneline",
+			"curl example.com",
+			"ls -la",
+			"cat package.json",
+			"rg foo .",
+			'echo "rm -rf x"',
+			"echo x > /dev/null",
+		]) {
 			expect((await rt.callTool("bash", { command })).blocked).toBe(false);
+		}
+		for (const command of [
+			"npm install foo",
+			"rm -rf /",
+			"echo hi > x.ts",
+			"git commit -m x",
+			"sed -i '' file",
+			"tee x.ts",
+		]) {
+			const result = await rt.callTool("bash", { command });
+			expect(result.blocked).toBe(true);
+			expect(result.reason).toContain("Plan mode");
 		}
 	});
 
@@ -174,15 +193,29 @@ describe("write gating (tool_call interception)", () => {
 
 		test("批准后写门控立即解除（同一轮内）", async () => {
 			const rt = await setup();
+			const { PLAN_REVIEW_OPTIONS } = await import("../index.ts");
 			rt.ctx.cwd = cwd;
 			writePlan(cwd, "PLAN.md", "# Plan\nstep 1");
 			await rt.runCommand("plan");
-			rt.ctx.ui.select = async () => "Approve — start implementation";
+			rt.ctx.ui.select = async (_title: string, options: string[]) => {
+				expect(options).toEqual([...PLAN_REVIEW_OPTIONS]);
+				return PLAN_REVIEW_OPTIONS[0];
+			};
 			const submit = await rt.callTool("submit_plan", { filePath: "PLAN.md" });
 			expect(submit.result.details.approved).toBe(true);
 			const w = await rt.callTool("write", { path: "x.ts", content: "hi" });
 			expect(w.blocked).toBe(false);
 		});
+	});
+});
+
+describe("submit_plan tool metadata", () => {
+	test("promptGuidelines 使用 submit_plan 工具名并描述调用约束", async () => {
+		const rt = await setup();
+		const guidelines = rt.tools.get("submit_plan").promptGuidelines as string[];
+		expect(guidelines).toHaveLength(4);
+		expect(guidelines.every((guideline) => guideline.startsWith("submit_plan:"))).toBe(true);
+		expect(guidelines.join("\n")).not.toContain("present_plan");
 	});
 });
 

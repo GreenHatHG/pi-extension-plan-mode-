@@ -15,6 +15,13 @@ const ALLOWED_PLAN_EXTENSIONS = new Set([".md", ".mdx"]);
 /** 提交计划的默认建议文件名（仅用于提示文案，不做硬性限制）。 */
 export const SUGGESTED_PLAN_FILE = "PLAN.md";
 
+/** 终端评审选项。select 只返回显示文本，因此注册和分支判断必须复用同一组常量。 */
+export const PLAN_REVIEW_OPTIONS = [
+	"Approve — start implementation",
+	"Revise — give feedback",
+	"Reject — stop here",
+] as const;
+
 /** 进入 plan 模式时注入一次的框架说明。必须写明写操作会被拦截——
  * 因为系统提示词的 Available tools 一节始终列出全部工具，AI 不知道有门控。 */
 export const PLANNING_FRAMING = `[PLAN MODE]
@@ -22,7 +29,7 @@ You are in plan mode.
 
 Rules until the plan is approved:
 - write/edit are hard-blocked EXCEPT for markdown plan files (.md/.mdx) inside the working directory. Write your plan there (e.g. PLAN.md, or a meaningful name like plans/auth.md); do NOT write or modify anything else.
-- bash is available, but keep exploration read-only in practice: avoid installing, building, or otherwise mutating project state.
+- bash is available for exploration, but obviously mutating commands (file mutation, redirects, installs, and git write operations) are blocked as a best-effort guard; this is not a shell sandbox.
 - Explore the codebase to build context, write the complete plan to a markdown file, then call ${TOOL_NAME} with that file's path.
 - A blocked tool call is not an error to retry: it means plan mode forbids it.
 
@@ -50,6 +57,83 @@ export function isPlanWritePathAllowed(rawPath: string, cwd: string): boolean {
 	if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) return false;
 	const ext = extname(targetAbs).toLowerCase();
 	return ALLOWED_PLAN_EXTENSIONS.has(ext);
+}
+
+interface BashMutationRule {
+	label: string;
+	pattern: RegExp;
+}
+
+const PLAN_MODE_BASH_MUTATION_RULES: BashMutationRule[] = [
+	{
+		label: "file mutation command",
+		pattern: /(?:^|[;&|]\s*)\s*(?:sudo\s+)?(?:rm|mv|cp|mkdir|touch|chmod|chown|ln)(?:\s|$)/m,
+	},
+	{
+		label: "package installation command",
+		pattern: /(?:^|[;&|]\s*)\s*(?:sudo\s+)?(?:npm|pnpm|yarn|bun)\s+(?:install|add|remove|uninstall|update)(?:\s|$)/m,
+	},
+	{
+		label: "git write command",
+		pattern:
+			/(?:^|[;&|]\s*)\s*(?:sudo\s+)?git\s+(?:add|commit|push|reset|restore|clean|checkout|switch|merge|rebase|cherry-pick)(?:\s|$)/m,
+	},
+	{
+		label: "in-place edit command",
+		pattern: /(?:^|[;&|]\s*)\s*sed\b[^\n;&|]*\s-i(?:\s|$)/m,
+	},
+	{
+		label: "tee command",
+		pattern: /(?:^|[;&|]\s*)\s*tee(?:\s|$)/m,
+	},
+	{
+		label: "shell output redirection",
+		pattern: /(?:^|[^0-9])>{1,2}(?![>&|])(?!(?:\s*)\/dev\/null(?:\s|$))/m,
+	},
+];
+
+/** 去除引号内的文本，避免 echo "rm -rf" / grep "git commit" 这类只读命令被误判。 */
+function stripQuotedShellText(command: string): string {
+	let quote: "'" | '"' | undefined;
+	let escaped = false;
+	let result = "";
+
+	for (const char of command) {
+		if (escaped) {
+			escaped = false;
+			result += " ";
+			continue;
+		}
+		if (quote) {
+			if (char === "\\" && quote === '"') {
+				escaped = true;
+			} else if (char === quote) {
+				quote = undefined;
+			}
+			continue;
+		}
+		if (char === "'" || char === '"') {
+			quote = char;
+			result += " ";
+		} else if (char === "\\") {
+			escaped = true;
+			result += " ";
+		} else {
+			result += char;
+		}
+	}
+
+	return result;
+}
+
+/** 返回命中的明显写入命令规则；这是护栏，不是完整的 shell 安全沙箱。 */
+export function findObviousBashMutation(command: string): string | undefined {
+	const normalized = stripQuotedShellText(command);
+	return PLAN_MODE_BASH_MUTATION_RULES.find((rule) => rule.pattern.test(normalized))?.label;
+}
+
+export function isObviouslyMutatingBash(command: string): boolean {
+	return findObviousBashMutation(command) !== undefined;
 }
 
 // ── 状态持久化 ─────────────────────────────────────────────────────
@@ -215,6 +299,16 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 				reason: `Plan mode: ${event.toolName} is blocked outside markdown plan files (.md/.mdx) inside the working directory. Write your plan to a file like ${SUGGESTED_PLAN_FILE} and present it via ${TOOL_NAME}; full write access returns after approval.`,
 			};
 		}
+		if (event.toolName === "bash") {
+			const command = String((event.input as { command?: unknown })?.command ?? "");
+			const matchedRule = findObviousBashMutation(command);
+			if (matchedRule) {
+				return {
+					block: true,
+					reason: `Plan mode: bash command blocked because it looks like a ${matchedRule}. This is a best-effort guard, not a shell sandbox. Keep exploration read-only or use /plan to leave plan mode. Command: ${command}`,
+				};
+			}
+		}
 	});
 
 	// ── submit_plan 工具：终端内批准回路（Codex 风格）────────────
@@ -223,13 +317,14 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: TOOL_NAME,
 		label: "Submit plan",
-		description: "Submits a written markdown plan file to the user for interactive review and approval before execution.",
+		description:
+			"Submits a written markdown plan file to the user for interactive review and approval before execution.",
 		promptSnippet: "submit a markdown plan file for user review",
 		promptGuidelines: [
-			"Call present_plan only while in plan mode.",
-			"Before calling present_plan, write the entire proposal to a markdown file (.md/.mdx) within the workspace (e.g., PLAN.md or plans/task.md).",
-			"If the user provides feedback or requests revisions, edit the plan file in place and invoke present_plan again with the same path.",
-			"Do NOT attempt implementation until the user explicitly approves the plan via present_plan."
+			"submit_plan: Call only while in plan mode to present a finished plan for user review.",
+			"submit_plan: Before calling, write the entire proposal to a markdown file (.md/.mdx) within the workspace and pass only its path — never the plan text.",
+			"submit_plan: If the user requests revisions, edit the same plan file in place and call submit_plan again with the same path.",
+			"submit_plan: Do NOT start implementation until the user approves the plan via submit_plan.",
 		],
 		parameters: Type.Object({
 			filePath: Type.String({
@@ -331,11 +426,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 			}
 
 			// 终端确认（阻塞直到用户选择；Esc 取消 = undefined）
-			const choice = await ctx.ui.select("Plan — review and decide:", [
-				"Approve — start implementation",
-				"Revise — give feedback",
-				"Reject — stop here",
-			]);
+			const choice = await ctx.ui.select("Plan — review and decide:", [...PLAN_REVIEW_OPTIONS]);
 
 			if (choice === undefined) {
 				// 取消/Esc：不改变状态，AI 原地等指示
@@ -345,7 +436,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 				};
 			}
 
-			if (choice.startsWith("Approve")) {
+			if (choice === PLAN_REVIEW_OPTIONS[0]) {
 				planMode = false;
 				framingDelivered = false;
 				offNoticePending = false;
@@ -363,7 +454,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 				};
 			}
 
-			if (choice.startsWith("Revise")) {
+			if (choice === PLAN_REVIEW_OPTIONS[1]) {
 				const feedback = await ctx.ui.editor("What should change in the plan?", "");
 				const feedbackText = feedback?.trim();
 				if (!feedbackText) {
